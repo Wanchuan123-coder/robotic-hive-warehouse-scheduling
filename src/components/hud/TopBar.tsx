@@ -23,16 +23,18 @@ export function formatSimClock(simTimeMs: number): string {
 
 export function TopBar({ state }: TopBarProps) {
   const scenarioName = useStore(state, (s) => s.scenarioName);
-  const strategy = useStore(state, (s) => s.strategy);
+  const running = useStore(state, (s) => s.running);
   const simTimeMs = useStore(state, (s) => s.simTimeMs);
   const pythonOnline = useStore(state, (s) => s.pythonOnline);
   const error = useStore(state, (s) => s.error);
 
   return (
     <header className="hud-panel hud-topbar">
-      <span className="hud-brand">HIVE-1</span>
-      <span className="hud-topbar-item">{scenarioName || '—'}</span>
-      <span className="hud-topbar-item">{strategy}</span>
+      <span className="hud-brand">HIVE LAB</span>
+      <span className={`hud-run-state ${running ? 'hud-run-state-active' : ''}`}>
+        {running ? 'Running' : 'Paused'}
+      </span>
+      <span className="hud-topbar-item">Scenario · {scenarioName || '—'}</span>
       <span
         className={`hud-python ${pythonOnline ? 'hud-python-online' : 'hud-python-offline'}`}
       >
@@ -43,7 +45,7 @@ export function TopBar({ state }: TopBarProps) {
           {error}
         </span>
       ) : null}
-      <span className="hud-clock">t+ {formatSimClock(simTimeMs)}</span>
+      <span className="hud-clock">Sim {formatSimClock(simTimeMs)}</span>
     </header>
   );
 }

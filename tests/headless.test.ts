@@ -14,11 +14,11 @@ test('parses durations', () => {
 test('parses headless flags', () => {
   const args = parseHeadlessArgs([
     '--config', 'configs/smoke.json', '--strategy', 'python:auction',
-    '--until', '1h', '--seed', '7', '--out', 'results/x',
+    '--until', '1h', '--seed', '7', '--load', '0.75', '--out', 'results/x',
   ]);
   expect(args).toEqual({
     configPath: 'configs/smoke.json', strategy: 'python:auction',
-    untilMs: 3_600_000, seed: 7, outDir: 'results/x',
+    untilMs: 3_600_000, seed: 7, loadFactor: 0.75, outDir: 'results/x',
   });
 });
 
@@ -55,7 +55,26 @@ test('defaults the strategy and output directory', () => {
   const args = parseHeadlessArgs(['--config', 'configs/smoke.json', '--until', '30s']);
   expect(args.strategy).toBe('builtin:fcfs');
   expect(args.seed).toBeUndefined();
+  expect(args.loadFactor).toBeUndefined();
   expect(args.outDir.startsWith('results/')).toBe(true);
+});
+
+test('rejects invalid load overrides', () => {
+  for (const value of ['-0.1', '1.01', 'NaN', 'Infinity', '', ' ']) {
+    expect(() => parseHeadlessArgs(['--config', 'configs/smoke.json', '--until', '5m', '--load', value]))
+      .toThrow(/Invalid --load/);
+  }
+});
+
+test('a zero load override disables demand for this run and is recorded in its output', async () => {
+  const outDir = await mkdtemp(path.join(tmpdir(), 'hive-load-'));
+  const options = parseHeadlessArgs(['--config', 'configs/smoke.json', '--until', '1m', '--load', '0', '--out', outDir]);
+  const result = await runHeadless(options);
+  expect(result.config.orders.loadFactor).toBe(0);
+  expect(result.metrics.jobsCompleted).toBe(0);
+  expect(result.metrics.jobsPending).toBe(0);
+  const resolved = JSON.parse(await readFile(path.join(outDir, 'config.resolved.json'), 'utf8'));
+  expect(resolved.orders).toEqual(result.config.orders);
 });
 
 test('accepts only positive integer durations with ms/s/m/h suffixes', () => {

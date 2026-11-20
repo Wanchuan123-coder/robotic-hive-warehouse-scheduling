@@ -1,31 +1,56 @@
 {
-  "grid": { "width": 100, "height": 100 },
-  "robots": 2000,
-  "pods": { "count": 6000, "replenishDelayMs": 5000 },
+  "grid": { "width": 30, "height": 20 },
+  "robots": 25,
+  "pods": { "count": 120, "replenishDelayMs": 5000 },
   "stations": [
     {
-      "id": "S-1",
-      "docks": [[0, 25], [0, 26]],
-      "queueCapacity": 8,
+      "id": "F-1",
+      "kind": "fetch",
+      "docks": [[0, 9], [0, 10]],
+      "queueCapacity": 4,
       "serviceTimeMs": 1000
     },
     {
-      "id": "S-2",
-      "docks": [[99, 50], [99, 51]],
-      "queueCapacity": 8,
-      "serviceTimeMs": 1000
+      "id": "D-1",
+      "kind": "delivery",
+      "docks": [[29, 5], [29, 6]],
+      "queueCapacity": 6,
+      "serviceTimeMs": 500
     },
     {
-      "id": "S-3",
-      "docks": [[0, 75], [0, 76]],
-      "queueCapacity": 8,
-      "serviceTimeMs": 1000
+      "id": "D-2",
+      "kind": "delivery",
+      "docks": [[29, 13], [29, 14]],
+      "queueCapacity": 6,
+      "serviceTimeMs": 500
     }
   ],
+  "chargingStations": [
+    {
+      "id": "C-1",
+      "docks": [[4, 19], [5, 19], [6, 19], [7, 19], [8, 19]]
+    },
+    {
+      "id": "C-2",
+      "docks": [[21, 19], [22, 19], [23, 19], [24, 19], [25, 19]]
+    }
+  ],
+  "layout": {
+    "mode": "structured",
+    "perimeterWidth": 2,
+    "storage": {
+      "insetX": 4,
+      "insetY": 3,
+      "blockWidth": 3,
+      "blockHeight": 3,
+      "aisleWidth": 1
+    }
+  },
   "orders": {
-    "arrivalRatePerHour": 1600,
-    "linesPerOrder": { "min": 1, "max": 6 },
-    "packingTimeMs": 30000
+    "loadFactor": 0.5,
+    "arrivalRatePerHour": 0,
+    "linesPerOrder": { "min": 1, "max": 3 },
+    "packingTimeMs": 5000
   },
   "allocation": {
     "intervalMs": 1000,

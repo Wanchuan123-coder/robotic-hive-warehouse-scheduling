@@ -66,3 +66,80 @@ test('a zero interarrival sample is clamped so generation always advances', () =
   const orders = generator.generateDueOrders();
   expect(orders).toHaveLength(1);
 });
+
+function loadConfig(loadFactor: number, robots = 10) {
+  return parseConfig({
+    grid: { width: 20, height: 20 },
+    robots,
+    pods: { count: 50 },
+    stations: [
+      {
+        id: 'F-1', kind: 'fetch', docks: [[0, 4]],
+        queueCapacity: 4, serviceTimeMs: 1000,
+      },
+      {
+        id: 'D-1', kind: 'delivery', docks: [[19, 4]],
+        queueCapacity: 4, serviceTimeMs: 1000,
+      },
+    ],
+    orders: {
+      loadFactor,
+      arrivalRatePerHour: 0,
+      linesPerOrder: { min: 2, max: 2 },
+    },
+    seed: 42,
+  });
+}
+
+test('load zero creates no work', () => {
+  const configured = loadConfig(0);
+  const world = createWorld(configured);
+  const generator = new OrderGenerator(world, configured.orders, world.rng);
+
+  world.simTimeMs = 60_000;
+  expect(generator.generateDueOrders()).toEqual([]);
+  expect(world.jobs.size).toBe(0);
+});
+
+test('load mode fills but does not exceed the target robot-work slots', () => {
+  const configured = loadConfig(0.5);
+  const world = createWorld(configured);
+  const generator = new OrderGenerator(world, configured.orders, world.rng);
+
+  const created = generator.generateDueOrders();
+  expect(created.map((order) => order.jobIds.length)).toEqual([2, 2, 1]);
+  expect(world.jobs.size).toBe(5);
+  expect(generator.generateDueOrders()).toEqual([]);
+});
+
+test('load mode replenishes work after a trip and parking cycle finish', () => {
+  const configured = loadConfig(0.5, 4);
+  const world = createWorld(configured);
+  const generator = new OrderGenerator(world, configured.orders, world.rng);
+
+  generator.generateDueOrders();
+  const completed = [...world.jobs.values()][0]!;
+  completed.status = 'complete';
+  const completedPod = world.pods.find((pod) => pod.id === completed.podId)!;
+  completedPod.reservedByJobId = null;
+
+  // A robot still returning to a parking cell occupies the released slot.
+  world.robots[0]!.status = 'moving_empty';
+  world.robots[0]!.jobId = null;
+  expect(generator.generateDueOrders()).toEqual([]);
+
+  world.robots[0]!.status = 'idle';
+  expect(generator.generateDueOrders()).toHaveLength(1);
+  expect([...world.jobs.values()].filter((job) => job.status !== 'complete')).toHaveLength(2);
+});
+
+test('jobs only target delivery stations', () => {
+  const configured = loadConfig(0.2);
+  const world = createWorld(configured);
+  const generator = new OrderGenerator(world, configured.orders, world.rng);
+
+  generator.generateDueOrders();
+  for (const job of world.jobs.values()) {
+    expect(job.candidateStations).toEqual(['D-1']);
+  }
+});

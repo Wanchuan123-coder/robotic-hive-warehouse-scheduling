@@ -1,7 +1,9 @@
 import { parseConfig } from '@/sim/config';
 import { FcfsAllocator } from '@/sim/fcfs';
+import { deriveLayout } from '@/sim/layout';
 import { manhattan } from '@/sim/movement';
 import { Simulation } from '@/sim/simulation';
+import { cellKey } from '@/sim/world';
 
 function makeSim() {
   return new Simulation(
@@ -45,6 +47,12 @@ test('accepts a valid assignment and starts the robot', () => {
   expect(result.accepted).toBe(1);
   expect(sim.world.robots[0].status).toBe('moving_empty');
   expect(sim.world.jobs.get(jobId)!.status).toBe('assigned');
+  for (let i = 0; i < 12; i++) sim.tick();
+  const approaching = sim.observe();
+  expect(approaching.stations[0]).toMatchObject({ incomingTrips: 1, queueLength: 0 });
+  sim.skipAllocation(approaching.allocationSeq);
+  for (let i = 0; i < 30 && sim.world.jobs.get(jobId)!.status !== 'complete'; i++) sim.tick();
+  expect(sim.observe().stations[0]).toMatchObject({ incomingTrips: 0, queueLength: 1 });
 });
 
 test('rejects duplicate robots and leaves the second job ready', () => {
@@ -66,7 +74,7 @@ test('rejects a station outside the job candidates', () => {
   const sim = makeSim();
   const jobId = addJob(sim);
   sim.world.stations.push({
-    id: 'S-2', docks: [{ x: 9, y: 5 }], queueCapacity: 2,
+    id: 'S-2', kind: 'delivery', docks: [{ x: 9, y: 5 }], queueCapacity: 2,
     serviceTimeMs: 1000, queue: [], serviceRemainingMs: 0,
   });
   const obs = sim.observe();
@@ -89,7 +97,7 @@ test('a stale allocation response is ignored', () => {
 test('first accepted trip freezes the order station for later trips', () => {
   const sim = makeSim();
   sim.world.stations.push({
-    id: 'S-2', docks: [{ x: 9, y: 5 }], queueCapacity: 2,
+    id: 'S-2', kind: 'delivery', docks: [{ x: 9, y: 5 }], queueCapacity: 2,
     serviceTimeMs: 1000, queue: [], serviceRemainingMs: 0,
   });
   const first = addJob(sim);
@@ -141,7 +149,7 @@ test('robot waits at a full dock, then deposits when a slot frees', () => {
 test('a frozen-order mismatch outranks the candidate-station check', () => {
   const sim = makeSim();
   sim.world.stations.push({
-    id: 'S-2', docks: [{ x: 9, y: 5 }], queueCapacity: 2,
+    id: 'S-2', kind: 'delivery', docks: [{ x: 9, y: 5 }], queueCapacity: 2,
     serviceTimeMs: 1000, queue: [], serviceRemainingMs: 0,
   });
   const jobId = addJob(sim);
@@ -277,6 +285,64 @@ test('parking uses the in-apron fallback when no outside-apron cell is free', ()
   expect(robot.status).toBe('moving_empty');
   expect(robot.path.length).toBeGreaterThan(0);
   expect(manhattan(robot.path.at(-1)!, station.docks[0]!)).toBeLessThanOrEqual(2);
+});
+
+test('structured post-service parking uses distinct perimeter targets', () => {
+  const config = parseConfig({
+    grid: { width: 12, height: 10 },
+    robots: 2,
+    pods: { count: 10 },
+    stations: [
+      {
+        id: 'D-1',
+        kind: 'delivery',
+        docks: [[11, 4], [11, 5]],
+        queueCapacity: 4,
+        serviceTimeMs: 1000,
+      },
+    ],
+    layout: {
+      mode: 'structured',
+      perimeterWidth: 1,
+      storage: {
+        insetX: 2,
+        insetY: 2,
+        blockWidth: 2,
+        blockHeight: 2,
+        aisleWidth: 1,
+      },
+    },
+    orders: { arrivalRatePerHour: 0 },
+    seed: 4,
+  });
+  const sim = new Simulation(config);
+  const firstJob = addJob(sim, 'O-000001');
+  const secondJob = addJob(sim, 'O-000002');
+  sim.world.jobs.get(secondJob)!.podId = 'P-00002';
+  for (const jobId of [firstJob, secondJob]) {
+    const job = sim.world.jobs.get(jobId)!;
+    job.status = 'assigned';
+    job.stationId = 'D-1';
+    job.candidateStations = ['D-1'];
+  }
+
+  for (const [robot, jobId, dock] of [
+    [sim.world.robots[0]!, firstJob, sim.world.stations[0]!.docks[0]!],
+    [sim.world.robots[1]!, secondJob, sim.world.stations[0]!.docks[1]!],
+  ] as const) {
+    robot.cell = { ...dock };
+    robot.jobId = jobId;
+    robot.carrying = true;
+    robot.status = 'moving_loaded';
+    robot.path = [];
+  }
+
+  sim.tick();
+
+  const parkingKeys = new Set(deriveLayout(config).parkingCells.map(cellKey));
+  const targets = sim.world.robots.map((robot) => robot.path.at(-1)!);
+  expect(new Set(targets.map(cellKey)).size).toBe(2);
+  expect(targets.every((target) => parkingKeys.has(cellKey(target)))).toBe(true);
 });
 
 test('order completion preserves the full packing duration', () => {

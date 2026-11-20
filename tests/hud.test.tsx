@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { act, render, screen, fireEvent } from '@testing-library/react';
+import { act, render, screen, fireEvent, within } from '@testing-library/react';
 import { Hud } from '@/components/hud/Hud';
 import { createHudStore } from '@/lib/hudStore';
+import { defaultConfig } from '@/sim/config';
 
 test('renders live metrics and sends run commands', () => {
   const calls: string[] = [];
@@ -14,17 +15,56 @@ test('renders live metrics and sends run commands', () => {
       throughputPerHour: 1080, throughputWindowPerHour: 1080,
       completionTimeMs: { mean: 1, p50: 5000, p90: 1, p95: 14000, p99: 1, max: 1 },
       utilisation: { overall: 0.87, idle: 0.13, movingEmpty: 0.2, movingLoaded: 0.3, waiting: 0.2, atStation: 0.17 },
-      jobsPending: 7, rejectedAssignments: 0, deadlockEvents: 0, stations: [],
+      jobsPending: 7, rejectedAssignments: 0, deadlockEvents: 3,
+      stations: [
+        { id: 'D-1', busyFraction: 0.3, avgQueueLength: 1, maxQueueLength: 2 },
+        { id: 'D-2', busyFraction: 0.5, avgQueueLength: 3, maxQueueLength: 4 },
+      ],
     },
     strategies: ['builtin:fcfs'], strategy: 'builtin:fcfs',
     scenarioName: 'smoke', scenarios: [{ name: 'smoke', config: {} as any }],
     pythonOnline: false, selected: null, inspection: null, error: null,
   });
-  render(<Hud client={client} state={state} />);
+  render(<Hud client={client} state={state} config={defaultConfig} />);
+  const metrics = screen.getByRole('region', { name: 'Metrics' });
   expect(screen.getByText('1,080/h')).toBeInTheDocument();
   expect(screen.getByText('87%')).toBeInTheDocument();
+  expect(within(metrics).getByText('Demand load')).toBeInTheDocument();
+  expect(within(metrics).getByText('Robot utilisation')).toBeInTheDocument();
+  expect(within(metrics).getByText('Traffic wait').nextElementSibling).toHaveTextContent('20.0%');
+  expect(within(metrics).getByText('Delivery busy')).toBeInTheDocument();
+  expect(within(metrics).getByText('40%')).toBeInTheDocument();
+  expect(within(metrics).getByText('Traffic recoveries')).toBeInTheDocument();
+  expect(within(metrics).getByText('3')).toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: /play/i }));
   expect(calls).toEqual(['play']);
+});
+
+test('shows demand load and robot count, then restarts with an adjusted load', () => {
+  const restarts: typeof defaultConfig[] = [];
+  const client = {
+    restart: (config: typeof defaultConfig) => restarts.push(config),
+    selectStrategy: () => undefined,
+  } as any;
+  const state = createHudStore({
+    ...emptyHudData(),
+    scenarioName: 'default',
+  });
+
+  render(<Hud client={client} state={state} config={defaultConfig} />);
+
+  const metrics = screen.getByRole('region', { name: 'Metrics' });
+  expect(within(metrics).getByText('50%')).toBeInTheDocument();
+  expect(screen.getByText(`${defaultConfig.robots} robots`)).toBeInTheDocument();
+  expect(screen.queryByRole('region', { name: 'Inspector' })).not.toBeInTheDocument();
+
+  fireEvent.change(screen.getByLabelText('Demand load'), { target: { value: '0.8' } });
+  expect(screen.getByText('80% · 20 slots')).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Apply load & restart' }));
+
+  expect(restarts).toHaveLength(1);
+  expect(restarts[0]?.orders.loadFactor).toBe(0.8);
+  expect(state.getState().scenarioName).toBe('custom');
 });
 
 function makeMetrics(throughputPerHour: number) {

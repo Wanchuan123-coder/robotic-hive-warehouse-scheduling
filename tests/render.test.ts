@@ -4,6 +4,7 @@ import {
   interpolatedWorldPosition,
   stateColor,
 } from '@/components/hive/render';
+import { cameraPoseForGrid } from '@/components/hive/HiveCanvas';
 import { SnapshotSource } from '@/lib/snapshotSource';
 import type { Snapshot } from '@/sim/simulation';
 
@@ -19,6 +20,16 @@ test('interpolates linearly', () => {
 test('state colours are stable', () => {
   expect(stateColor('idle')).toBe('#5f7d8c');
   expect(stateColor('waiting')).toBe('#c0442f');
+});
+
+test('camera framing scales with small and large grids', () => {
+  const small = cameraPoseForGrid({ width: 30, height: 20 });
+  const large = cameraPoseForGrid({ width: 100, height: 100 });
+
+  expect(small.position[1]).toBeCloseTo(35.4);
+  expect(small.far).toBe(300);
+  expect(large.position[1]).toBeCloseTo(118);
+  expect(large.far).toBe(800);
 });
 
 function snapshotAt(timeMs: number): Snapshot {

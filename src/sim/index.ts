@@ -3,6 +3,7 @@ export * from './rng';
 export * from './types';
 export * from './world';
 export * from './orders';
+export * from './layout';
 export * from './movement';
 export * from './allocation';
 export * from './fcfs';

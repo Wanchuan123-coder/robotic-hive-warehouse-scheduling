@@ -23,6 +23,8 @@ export interface JobObservation {
 export interface StationObservation {
   id: string;
   queueLength: number;
+  /** Assigned trips still travelling or waiting to deposit. */
+  incomingTrips?: number;
   queueCapacity: number;
   serviceTimeMs: number;
   busy: boolean;

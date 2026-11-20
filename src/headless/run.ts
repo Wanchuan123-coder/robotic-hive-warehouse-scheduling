@@ -96,12 +96,19 @@ export async function runHeadless(
   options: HeadlessRunOptions,
 ): Promise<HeadlessSummary> {
   const raw: unknown = JSON.parse(await readFile(options.configPath, 'utf8'));
-  let input = raw;
-  if (options.seed !== undefined && raw !== null && typeof raw === 'object' && !Array.isArray(raw)) {
-    input = { ...(raw as Record<string, unknown>), seed: options.seed };
+  if (raw !== null && typeof raw === 'object' && !Array.isArray(raw)) {
+    const scenario = raw as Record<string, unknown>;
+    if (options.seed !== undefined) scenario.seed = options.seed;
+    const orders = scenario.orders;
+    if (options.loadFactor !== undefined) {
+      if (orders === undefined) scenario.orders = { loadFactor: options.loadFactor };
+      else if (orders !== null && typeof orders === 'object' && !Array.isArray(orders)) {
+        scenario.orders = { ...orders, loadFactor: options.loadFactor };
+      }
+    }
   }
 
-  const parsed = parseConfig(input);
+  const parsed = parseConfig(raw);
   const config: SimConfig = {
     ...parsed,
     allocation: { ...parsed.allocation, strategy: options.strategy },

@@ -137,7 +137,7 @@ export default function Page() {
           onSelect={(target) => useHudStore.getState().setSelected(target)}
         />
       ) : null}
-      <Hud client={hudClient} state={useHudStore} />
+      <Hud client={hudClient} state={useHudStore} config={config} />
     </main>
   );
 }

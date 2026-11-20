@@ -17,7 +17,24 @@ baseline and works with no Python installed.
   standard library only, so no runtime packages are required.
 - A modern browser with WebGL for the live view.
 
-The default scenario targets 2,000 robots on a 100×100 grid.
+The live default is a small, debuggable prototype: 25 robots on a 30×20 grid,
+120 pods in a central structured storage area, fixed fetch/delivery facilities,
+and charging-deck placeholders along the outer edge.
+
+### Design reference and current scope
+
+The spatial model follows the broad shape of the
+[Ocado storage grid](https://www.ocadogroup.com/about-us/our-technology): a central
+storage area, robots moving on a regular cell grid, and workstations connected at
+the perimeter. Ocado's public
+[CFC fly-through](https://www.youtube.com/watch?v=tp9GIMPB2rA) is a useful visual
+reference, not a claim that this simulator reproduces Ocado's proprietary control
+system.
+
+Fetch facilities and charging decks are deliberately shown as fixed layout
+placeholders in this iteration. Orders are dispatched only to delivery stations;
+inbound fetch flow, battery discharge/charging, and wireless communication quality
+remain follow-up models rather than simulated behaviour.
 
 ## Install
 
@@ -54,19 +71,21 @@ its session once if the sidecar reports that the cached session is unknown (404)
 
 ### Layout and controls
 
-The UI uses layout A — a full-bleed hive with floating glass panels:
+The UI separates experiment setup from run controls:
 
-- **Top bar:** scenario name, active allocator, Python status, simulation clock.
-- **Top-left metrics:** throughput, orders completed, completion p50/p95, utilisation,
-  pending jobs, and a throughput sparkline.
-- **Top-right inspector:** click a robot to see its state, battery, job, order, assigned
-  station, path progress and carrying flag; click a station to see queue length/capacity,
-  busy state and remaining service time.
-- **Bottom dock:** Play/Pause, Step, Restart, speed selector (0.25×, 0.5×, 1×, 2×, 4×,
-  8×, 16×), measured achieved speed, algorithm selector, scenario selector, and the
-  robot-state legend.
-- **Scene:** instanced robots and pods, grid floor and station meshes, with orbit/zoom
-  camera controls. The algorithm selector requests a hot-swap on the next allocation
+- **Top bar:** run state, scenario, Python/FCFS status, and simulation clock.
+- **Experiment setup:** demand load (0–100%), robot count, algorithm, scenario, and an
+  explicit **Apply load & restart** action. A demand load of 0 creates no work; 1 keeps
+  approximately one concurrent work slot per robot.
+- **Metrics:** demand load, achieved robot utilisation, delivery-station busy fraction,
+  traffic recoveries, robot time spent waiting for movement, pending jobs, delivery-station queue,
+  throughput, completed orders, p95 completion time, and a throughput sparkline.
+- **Inspector:** appears only after clicking a robot or station and shows its live detail.
+- **Bottom transport bar:** Play/Pause, Step, Restart, speed selector (0.25× through 16×),
+  and measured achieved speed. The robot-state legend is separate from the controls.
+- **Scene:** a labelled central storage grid, typed Fetch/Delivery facilities, edge
+  charging decks, instanced robots and pods, and an adaptive orbit/zoom camera.
+  The algorithm selector requests a hot-swap on the next allocation
   tick, keeping the same world; the label changes only after the worker acknowledges the
   active strategy, so a rejected strategy leaves the previous label in place and shows
   the error. Choosing a scenario restarts the simulation with that config, and **Restart**
@@ -75,7 +94,7 @@ The UI uses layout A — a full-bleed hive with floating glass panels:
 ## Headless runs
 
 ```bash
-npm run sim -- --config configs/default.json --strategy builtin:fcfs --until 24h
+npm run sim -- --config configs/default.json --strategy builtin:fcfs --load 1 --seed 42 --until 5m
 ```
 
 Flags:
@@ -86,6 +105,7 @@ Flags:
 | `--until <duration>` | yes | Positive integer with an `ms`, `s`, `m`, or `h` suffix. |
 | `--strategy <id>` | no | `builtin:fcfs` (default) or `python:<module>`. |
 | `--seed <int>` | no | Overrides the config seed. |
+| `--load <0..1>` | no | Overrides `orders.loadFactor` for this run. Omit to use the scenario's demand settings. |
 | `--out <dir>` | no | Output directory; defaults to a fresh `results/<timestamp>`. |
 
 Unknown flags, missing values, and invalid durations or seeds exit with code 1. A Python
@@ -208,7 +228,9 @@ The observation passed to `allocate` contains:
   `waiting`, `at_station`), `battery`, `jobId`.
 - `jobs` (ready jobs only): `id`, `orderId`, `podId`, `pickup`, `candidateStations`,
   `priority`, `createdAtMs`, `dependsOn`.
-- `stations`: `id`, `queueLength`, `queueCapacity`, `serviceTimeMs`, `busy`, `docks`.
+- `stations`: `id`, `queueLength`, `incomingTrips`, `queueCapacity`, `serviceTimeMs`, `busy`, `docks`.
+  `incomingTrips` counts assigned trips that have yet to deposit. FCFS adds these to
+  the queue length and counts each new assignment when scoring the next job in a batch.
 
 Assignments are validated sequentially: the job must be ready, the robot idle and
 unassigned, the station a current candidate, and neither job nor robot may appear twice in
@@ -250,7 +272,8 @@ Metrics are cumulative unless noted, exported in `summary.json`, and shown live:
   at-station time count as utilisation).
 - **Rejected assignments** — cumulative count of individual assignments rejected by
   validation.
-- **Deadlock events** — cumulative traffic deadlock detection/recovery events.
+- **Traffic recoveries / deadlock events** — cumulative traffic recovery events (shown as
+  **Traffic recoveries** in the UI), not a count of permanently stuck robots.
 - **Station queue stats** — per station `busyFraction` (service time over simulated time),
   `avgQueueLength` (tick-average queue length) and `maxQueueLength`.
 - **Jobs completed / pending** — deposited trips versus jobs not yet complete.
@@ -260,8 +283,9 @@ its pods are serviced and the packing timer finishes.
 
 ## Determinism
 
-- The config `seed` (default 42, overridable with `--seed`) drives order generation, pod
-  replenishment placement and simulation tie-breaks through a seeded PRNG. The core never
+- The config `seed` (default 42, overridable with `--seed`) drives order generation,
+  structured-slot selection, pod replenishment placement and simulation tie-breaks through
+  a seeded PRNG. The core never
   reads wall-clock time or `Math.random`.
 - Iteration over robots, jobs and stations uses stable array/Map insertion order, and FCFS
   breaks ties by creation time and id.
@@ -279,9 +303,9 @@ its pods are serviced and the packing timer finishes.
 - **Headless:** faster than real time on the default scenario. The benchmark enforces a
   measured `simHoursPerWallHour >= 1.0` and exits non-zero otherwise. A 24 h scenario
   should finish comfortably inside 24 h wall time.
-- **Live:** 2,000 robots at ≥30 fps while the simulation advances at 1×. This browser
-  check is an outstanding manual acceptance target; it is **not** measured by the headless
-  benchmark and is listed as such in [`docs/benchmarks.md`](docs/benchmarks.md).
+- **Live default:** the 25-robot structured prototype should remain easy to inspect and
+  debug at 1×. Larger configurations, including the historical 2,000-robot benchmark,
+  remain supported as scalability experiments rather than the default development view.
 - Ticks are never skipped or merged. Requested speed is a target rate; the HUD shows the
   requested multiplier and, separately, the measured achieved speed (simulated time
   advanced per wall time over a window measured at turn completion, including allocator
@@ -299,13 +323,21 @@ applies defaults for omitted values. A complete explicit config is recommended �
 `config.resolved.json` in their output directory.
 
 Key fields: `grid {width, height}`, `robots`, `pods {count, replenishDelayMs}`,
-`stations [{id, docks [[x, y], ...], queueCapacity, serviceTimeMs}]`,
-`orders {arrivalRatePerHour, linesPerOrder {min, max}, packingTimeMs}`,
+`stations [{id, kind, docks [[x, y], ...], queueCapacity, serviceTimeMs}]`,
+`chargingStations [{id, docks [[x, y], ...]}]`,
+`layout {mode, perimeterWidth, storage {insetX, insetY, blockWidth, blockHeight, aisleWidth}}`,
+`orders {loadFactor, arrivalRatePerHour, linesPerOrder {min, max}, packingTimeMs}`,
 `allocation {intervalMs, strategy, timeoutMs, onFailure}`, `movement {tickMs}`, `seed`.
 
-Validation rules include: positive integers for sizes and durations; `robots` no greater
-than the grid cell count; `robots + pods.count` no greater than the grid cell count; at
-least one station, with docks inside the grid; unique station ids and dock cells;
+When `orders.loadFactor` is a number in `0..1`, it takes precedence over
+`arrivalRatePerHour` and the generator refills a bounded set of concurrent work slots.
+Set it to `null` to retain the legacy Poisson arrival-rate mode.
+The default prototype uses a demand load of `0.5` and two delivery stations with a
+`500 ms` service time each; the fetch station remains at `1000 ms`.
+
+Validation rules include: positive integers for sizes and durations; sufficient eligible
+storage/lane capacity; at least one delivery station; facility docks inside the grid and
+not overlapping; unique ids; `loadFactor` in `0..1`; and
 `linesPerOrder.min <= max`. Invalid
 files are skipped by discovery with a warning, so a broken scenario does not prevent the
 UI from loading.
@@ -320,7 +352,7 @@ src/worker/         Web Worker that owns one Simulation; src/lib/simClient.ts an
                     snapshotSource.ts decode and interpolate typed-array snapshots
                     published every 50 ms (status at 200 ms).
 src/components/hive R3F instanced scene: robots, pods, grid floor, stations, picking.
-src/components/hud  Layout A panels and controls backed by the Zustand HUD store.
+src/components/hud  Experiment, metrics, inspector and transport controls backed by Zustand.
 src/headless/       CLI parsing and the headless loop; scripts/run-headless.ts and
                     scripts/benchmark.ts are the command entry points.
 python/hive_sim/    Stdlib sidecar: server.py (HTTP/session lifecycle), runner.py

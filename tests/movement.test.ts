@@ -312,6 +312,94 @@ test('a moving robot pushes a parked idle blocker aside and advances', () => {
   );
 });
 
+test('a moving robot pushes an idle chain toward the nearest free cell', () => {
+  const world = movementWorld(4, 6, 1);
+  const [mover, firstIdle, secondIdle, thirdIdle] = world.robots;
+
+  mover.cell = { x: 0, y: 0 };
+  mover.path = [{ x: 1, y: 0 }];
+  mover.status = 'moving_empty';
+  mover.jobId = 'J-0000001';
+
+  for (const [robot, x] of [
+    [firstIdle, 1],
+    [secondIdle, 2],
+    [thirdIdle, 3],
+  ] as const) {
+    robot.cell = { x, y: 0 };
+    robot.path = [];
+    robot.status = 'idle';
+    robot.jobId = null;
+    robot.carrying = false;
+  }
+
+  const stats = updateMovement(world);
+
+  expect(stats.blocks).toBe(0);
+  expect(stats.moves).toBe(4);
+  expect(world.robots.map((robot) => robot.cell)).toEqual([
+    { x: 1, y: 0 },
+    { x: 2, y: 0 },
+    { x: 3, y: 0 },
+    { x: 4, y: 0 },
+  ]);
+  for (const robot of [firstIdle, secondIdle, thirdIdle]) {
+    expect(robot.status).toBe('idle');
+    expect(robot.jobId).toBeNull();
+  }
+});
+
+test('idle-chain yielding never parks a robot on a facility dock', () => {
+  const world = createWorld(
+    parseConfig({
+      grid: { width: 4, height: 2 },
+      robots: 5,
+      pods: { count: 1 },
+      stations: [
+        { id: 'S-1', docks: [[3, 0]], queueCapacity: 2, serviceTimeMs: 1000 },
+      ],
+      seed: 1,
+    }),
+  );
+  const [mover, firstIdle, secondIdle, firstWall, secondWall] = world.robots;
+
+  mover.cell = { x: 0, y: 0 };
+  mover.path = [{ x: 1, y: 0 }];
+  mover.status = 'moving_empty';
+  mover.jobId = 'J-0000001';
+
+  for (const [robot, x] of [
+    [firstIdle, 1],
+    [secondIdle, 2],
+  ] as const) {
+    robot.cell = { x, y: 0 };
+    robot.path = [];
+    robot.status = 'idle';
+    robot.jobId = null;
+    robot.carrying = false;
+  }
+
+  firstWall.cell = { x: 1, y: 1 };
+  firstWall.path = [];
+  firstWall.status = 'at_station';
+  secondWall.cell = { x: 2, y: 1 };
+  secondWall.path = [];
+  secondWall.status = 'at_station';
+
+  const stats = updateMovement(world);
+
+  expect(stats.moves).toBe(0);
+  expect(stats.blocks).toBe(1);
+  expect(world.robots.map((robot) => robot.cell)).toEqual([
+    { x: 0, y: 0 },
+    { x: 1, y: 0 },
+    { x: 2, y: 0 },
+    { x: 1, y: 1 },
+    { x: 2, y: 1 },
+  ]);
+  expect(world.robots.some((robot) => cellKey(robot.cell) === '3,0')).toBe(false);
+});
+
 test('an idle robot nudged aside is not moved a second time in the same tick', () => {
   // X is parked at (1,1). A pushes X north to (1,0) and advances. B then wants
   // (1,0): X is still idle and unassigned, but it was already relocated this

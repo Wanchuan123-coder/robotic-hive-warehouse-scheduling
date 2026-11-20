@@ -4,6 +4,7 @@ export interface HeadlessOptions {
   strategy: string;
   untilMs: number;
   seed?: number;
+  loadFactor?: number;
   outDir: string;
 }
 
@@ -14,7 +15,7 @@ const DURATION_UNIT_MS: Record<string, number> = {
   h: 3_600_000,
 };
 
-const FLAGS = new Set(['--config', '--strategy', '--until', '--seed', '--out']);
+const FLAGS = new Set(['--config', '--strategy', '--until', '--seed', '--load', '--out']);
 
 /**
  * Parses a positive integer duration with an `ms`, `s`, `m`, or `h` suffix into
@@ -83,11 +84,21 @@ export function parseHeadlessArgs(argv: string[]): HeadlessOptions {
     }
   }
 
+  let loadFactor: number | undefined;
+  const rawLoad = values.get('--load');
+  if (rawLoad !== undefined) {
+    loadFactor = Number(rawLoad);
+    if (!rawLoad.trim() || !Number.isFinite(loadFactor) || loadFactor < 0 || loadFactor > 1) {
+      throw new Error(`Invalid --load "${rawLoad}" (expected a number from 0 to 1)`);
+    }
+  }
+
   return {
     configPath,
     strategy: values.get('--strategy') ?? 'builtin:fcfs',
     untilMs: parseDuration(until),
     ...(seed === undefined ? {} : { seed }),
+    ...(loadFactor === undefined ? {} : { loadFactor }),
     outDir: values.get('--out') ?? `results/${Date.now()}`,
   };
 }

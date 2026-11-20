@@ -15,8 +15,11 @@ export interface StationMeshesProps {
   onSelect(target: InspectionTarget): void;
 }
 
-const IDLE_COLOR = 0x2f6f5e;
 const BUSY_COLOR = 0xe8a33d;
+const STATION_COLORS = {
+  fetch: 0x3f83b8,
+  delivery: 0x2f8a6d,
+} as const;
 
 interface StationMeshProps {
   station: StationConfig;
@@ -26,25 +29,28 @@ interface StationMeshProps {
 }
 
 function StationMesh({ station, position, registerMaterial, onSelect }: StationMeshProps) {
+  const isFetch = station.kind === 'fetch';
   return (
     <group position={[position.x, 0, position.z]}>
       <mesh
-        position={[0, 0.6, 0]}
+        position={[0, isFetch ? 0.4 : 0.65, 0]}
         onClick={(event) => {
           event.stopPropagation();
           onSelect({ type: 'station', id: station.id });
         }}
       >
-        <boxGeometry args={[2, 1.2, 2]} />
+        <boxGeometry args={isFetch ? [2.4, 0.8, 2.4] : [2.4, 1.3, 2.4]} />
         <meshStandardMaterial
           ref={(material) => registerMaterial(station.id, material)}
-          color={IDLE_COLOR}
+          color={STATION_COLORS[station.kind]}
           roughness={0.5}
           metalness={0.2}
         />
       </mesh>
-      <Html position={[0, 1.7, 0]} center style={{ pointerEvents: 'none' }}>
-        <div className="station-label">{station.id}</div>
+      <Html position={[0, isFetch ? 1.25 : 1.75, 0]} center style={{ pointerEvents: 'none' }}>
+        <div className={`station-label station-label-${station.kind}`}>
+          {station.kind.toUpperCase()} · {station.id}
+        </div>
       </Html>
     </group>
   );
@@ -84,7 +90,9 @@ export function StationMeshes({ source, config, onSelect }: StationMeshesProps) 
     for (const live of liveStations) {
       const material = materialById.current.get(live.id);
       if (!material) continue;
-      const next = live.busy ? BUSY_COLOR : IDLE_COLOR;
+      const station = stationById.get(live.id);
+      if (station === undefined) continue;
+      const next = live.busy ? BUSY_COLOR : STATION_COLORS[station.kind];
       if (material.color.getHex() !== next) material.color.setHex(next);
     }
   });

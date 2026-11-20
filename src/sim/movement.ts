@@ -217,9 +217,13 @@ export interface MovementStats {
 /** Ticks a robot may stay blocked before it recomputes its path. */
 const MAX_CONSECUTIVE_BLOCKED_TICKS = 10;
 /** Extra cost for entering a cell currently occupied by a robot. */
-const OCCUPIED_CELL_EXTRA_COST = 3;
+const OCCUPIED_CELL_EXTRA_COST = 5;
 /** Extra cost for entering a cell another robot intends to enter. */
-const CONTESTED_CELL_EXTRA_COST = 1;
+const CONTESTED_CELL_EXTRA_COST = 6;
+/** Softer penalty for cells on another robot's near-term route. */
+const ROUTED_CELL_EXTRA_COST = 2;
+/** Only reserve the near-term route so long paths do not over-constrain A*. */
+const ROUTE_LOOKAHEAD_STEPS = 20;
 
 function isCarrying(robot: Robot): boolean {
   return robot.carrying || robot.status === 'moving_loaded';
@@ -253,13 +257,14 @@ function comparePriority(a: Robot, b: Robot): number {
 }
 
 /**
- * Builds the congestion surcharge used when replanning: a cell holding another
- * robot costs 3 extra, and a cell that is another robot's intended next step
- * costs 1 extra. The replanning robot itself is ignored.
+ * Builds the congestion surcharge used when replanning. Occupied cells, an
+ * imminent next step and the near-term route receive progressively softer
+ * deterministic penalties. The replanning robot itself is ignored.
  */
 function buildCongestionCost(robots: Robot[], excludedId: string): (cell: Cell) => number {
   const occupied = new Map<string, number>();
   const contested = new Map<string, number>();
+  const routed = new Map<string, number>();
 
   for (const robot of robots) {
     if (robot.id === excludedId) continue;
@@ -270,6 +275,11 @@ function buildCongestionCost(robots: Robot[], excludedId: string): (cell: Cell) 
     if (robot.path.length > 0) {
       const nextKey = cellKey(robot.path[0]!);
       contested.set(nextKey, (contested.get(nextKey) ?? 0) + 1);
+      const lookahead = Math.min(ROUTE_LOOKAHEAD_STEPS, robot.path.length);
+      for (let index = 1; index < lookahead; index += 1) {
+        const routeKey = cellKey(robot.path[index]!);
+        routed.set(routeKey, (routed.get(routeKey) ?? 0) + 1);
+      }
     }
   }
 
@@ -277,9 +287,24 @@ function buildCongestionCost(robots: Robot[], excludedId: string): (cell: Cell) 
     const key = cellKey(cell);
     return (
       (occupied.get(key) ?? 0) * OCCUPIED_CELL_EXTRA_COST +
-      (contested.get(key) ?? 0) * CONTESTED_CELL_EXTRA_COST
+      (contested.get(key) ?? 0) * CONTESTED_CELL_EXTRA_COST +
+      (routed.get(key) ?? 0) * ROUTED_CELL_EXTRA_COST
     );
   };
+}
+
+/**
+ * Plans around current robot positions and near-term route reservations.
+ * Later assignments in the same allocation batch see paths already accepted
+ * for earlier robots, which spreads traffic before a wait cycle forms.
+ */
+export function findTrafficAwarePath(world: World, robot: Robot, goal: Cell): Cell[] {
+  return findPath(
+    world.config.grid,
+    robot.cell,
+    goal,
+    buildCongestionCost(world.robots, robot.id),
+  );
 }
 
 /** Replans a robot from its current cell to the last cell of its current path. */
@@ -288,12 +313,7 @@ function replanToGoal(world: World, robot: Robot, stats: MovementStats): void {
 
   const goal = robot.path[robot.path.length - 1]!;
   robot.path = [];
-  robot.path = findPath(
-    world.config.grid,
-    robot.cell,
-    goal,
-    buildCongestionCost(world.robots, robot.id),
-  );
+  robot.path = findTrafficAwarePath(world, robot, goal);
   stats.replans += 1;
 }
 
@@ -320,23 +340,71 @@ function findFreeNeighbour(
 }
 
 /**
- * Moves a parked idle robot one cell out of the way of a robot that wants to
- * enter its cell. The idle robot stays idle and unassigned. Returns false when
- * every neighbour is occupied, in which case the mover remains blocked.
+ * Pushes a connected chain of parked idle robots toward the nearest free cell,
+ * then leaves every pushed robot idle and unassigned. A single-cell nudge is
+ * the common case; the chain case prevents a dense idle cluster from becoming
+ * a permanent wall that is invisible to wait-cycle detection.
  */
 function yieldIdleBlocker(
   blocker: Robot,
   moverCell: Cell,
   grid: GridConfig,
   occupancy: Map<string, string>,
-): boolean {
-  const target = findFreeNeighbour(blocker.cell, grid, occupancy, moverCell);
-  if (target === undefined) return false;
+  robotsById: ReadonlyMap<string, Robot>,
+  relocatedThisTick: ReadonlySet<string>,
+  reservedFacilityCells: ReadonlySet<string>,
+): Robot[] {
+  const pending = [blocker.id];
+  const parent = new Map<string, string | null>([[blocker.id, null]]);
+  let terminalId: string | undefined;
+  let freeCell: Cell | undefined;
 
-  occupancy.delete(cellKey(blocker.cell));
-  blocker.cell = { x: target.x, y: target.y };
-  occupancy.set(cellKey(blocker.cell), blocker.id);
-  return true;
+  for (let cursor = 0; cursor < pending.length && freeCell === undefined; cursor += 1) {
+    const robotId = pending[cursor]!;
+    const robot = robotsById.get(robotId);
+    if (robot === undefined) continue;
+
+    for (const [dx, dy] of NEIGHBOUR_OFFSETS) {
+      const candidate = { x: robot.cell.x + dx, y: robot.cell.y + dy };
+      if (!isInBounds(candidate, grid)) continue;
+      if (candidate.x === moverCell.x && candidate.y === moverCell.y) continue;
+      if (reservedFacilityCells.has(cellKey(candidate))) continue;
+
+      const occupantId = occupancy.get(cellKey(candidate));
+      if (occupantId === undefined) {
+        terminalId = robotId;
+        freeCell = candidate;
+        break;
+      }
+      if (parent.has(occupantId) || relocatedThisTick.has(occupantId)) continue;
+
+      const occupant = robotsById.get(occupantId);
+      if (occupant === undefined || !isIdleBlocker(occupant)) continue;
+      parent.set(occupantId, robotId);
+      pending.push(occupantId);
+    }
+  }
+
+  if (terminalId === undefined || freeCell === undefined) return [];
+
+  const chain: Robot[] = [];
+  let currentId: string | null = terminalId;
+  while (currentId !== null) {
+    const robot = robotsById.get(currentId);
+    if (robot === undefined) return [];
+    chain.push(robot);
+    currentId = parent.get(currentId) ?? null;
+  }
+
+  let destination = freeCell;
+  for (const robot of chain) {
+    const vacated = { x: robot.cell.x, y: robot.cell.y };
+    occupancy.delete(cellKey(vacated));
+    robot.cell = { x: destination.x, y: destination.y };
+    occupancy.set(cellKey(robot.cell), robot.id);
+    destination = vacated;
+  }
+  return chain;
 }
 
 /**
@@ -409,6 +477,13 @@ export function updateMovement(world: World): MovementStats {
   for (const robot of world.robots) occupancy.set(cellKey(robot.cell), robot.id);
 
   const robotsById = new Map(world.robots.map((robot) => [robot.id, robot]));
+  const reservedFacilityCells = new Set<string>();
+  for (const station of world.config.stations) {
+    for (const dock of station.docks) reservedFacilityCells.add(cellKey(dock));
+  }
+  for (const station of world.config.chargingStations) {
+    for (const dock of station.docks) reservedFacilityCells.add(cellKey(dock));
+  }
   const orderedRobots = [...world.robots].sort(comparePriority);
   const blockedThisTick: Robot[] = [];
   // Robots relocated by a nudge or a recovery sidestep in this phase. They must
@@ -434,9 +509,18 @@ export function updateMovement(world: World): MovementStats {
           isIdleBlocker(blocker) &&
           !relocatedThisTick.has(blocker.id)
         ) {
-          if (yieldIdleBlocker(blocker, robot.cell, grid, occupancy)) {
-            relocatedThisTick.add(blocker.id);
-            stats.moves += 1;
+          const yielded = yieldIdleBlocker(
+            blocker,
+            robot.cell,
+            grid,
+            occupancy,
+            robotsById,
+            relocatedThisTick,
+            reservedFacilityCells,
+          );
+          if (yielded.length > 0) {
+            for (const idle of yielded) relocatedThisTick.add(idle.id);
+            stats.moves += yielded.length;
           }
         }
       }

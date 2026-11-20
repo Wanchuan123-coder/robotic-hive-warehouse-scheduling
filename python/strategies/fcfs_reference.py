@@ -18,8 +18,8 @@ def _pickup_to_station(pickup: dict[str, int], station: dict[str, Any]) -> int:
     return min(_manhattan(pickup, dock) for dock in docks)
 
 
-def _station_key(pickup: dict[str, int], station: dict[str, Any], queue_penalty: int) -> tuple[int, str]:
-    cost = _pickup_to_station(pickup, station) + queue_penalty * station.get("queueLength", 0)
+def _station_key(pickup: dict[str, int], station: dict[str, Any], committed: int) -> tuple[int, str]:
+    cost = _pickup_to_station(pickup, station) + QUEUE_PENALTY * committed
     return cost, station["id"]
 
 
@@ -45,6 +45,11 @@ class Strategy:
             key=lambda robot: robot["id"],
         )
         stations = {station["id"]: station for station in observation.get("stations", [])}
+        committed = {
+            sid: station.get("queueLength", 0) + station.get("incomingTrips", 0)
+            for sid, station in stations.items()
+        }
+        station_by_order: dict[str, str] = {}
         jobs = sorted(
             observation.get("jobs", []),
             key=lambda job: (job["createdAtMs"], job["id"]),
@@ -63,10 +68,15 @@ class Strategy:
             if not candidate_ids:
                 continue
 
-            station_id = min(
-                candidate_ids,
-                key=lambda candidate: _station_key(job["pickup"], stations[candidate], QUEUE_PENALTY),
-            )
+            order_id = job["orderId"]
+            station_id = station_by_order.get(order_id)
+            if station_id not in candidate_ids:
+                station_id = min(
+                    candidate_ids,
+                    key=lambda sid: _station_key(job["pickup"], stations[sid], committed[sid]),
+                )
+            station_by_order[order_id] = station_id
+            committed[station_id] += 1
             robots.remove(robot)
             assignments.append(
                 {"jobId": job["id"], "robotId": robot["id"], "stationId": station_id}

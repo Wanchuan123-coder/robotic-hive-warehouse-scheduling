@@ -1,4 +1,4 @@
-import type { Cell, SimConfig } from './config';
+import type { Cell, SimConfig, StationKind } from './config';
 import type { Rng } from './rng';
 
 export type RobotStatus =
@@ -36,6 +36,7 @@ export interface QueuedPod {
 
 export interface Station {
   id: string;
+  kind: StationKind;
   docks: Cell[];
   queueCapacity: number;
   serviceTimeMs: number;
@@ -78,6 +79,8 @@ export interface World {
   robots: Robot[];
   pods: Pod[];
   stations: Station[];
+  /** Structured storage slots used for initial placement and replenishment. */
+  podStorageCells: Cell[];
   jobs: Map<string, Job>;
   orders: Map<string, Order>;
   rng: Rng;

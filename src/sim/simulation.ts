@@ -9,8 +9,14 @@ import type {
   StationObservation,
 } from './allocation';
 import type { Cell, SimConfig } from './config';
+import { deriveLayout } from './layout';
 import { percentile } from './metrics';
-import { findPath, manhattan, NEIGHBOUR_OFFSETS, updateMovement } from './movement';
+import {
+  findTrafficAwarePath,
+  manhattan,
+  NEIGHBOUR_OFFSETS,
+  updateMovement,
+} from './movement';
 import type {
   Job,
   MetricsSample,
@@ -98,7 +104,6 @@ export class Simulation {
   private jobsCompleted = 0;
   private rejectedAssignments = 0;
   private deadlockEvents = 0;
-  private parkingSeq = 0;
 
   private readonly robotStateTimeMs: Record<RobotStatus, number> = {
     idle: 0,
@@ -147,6 +152,15 @@ export class Simulation {
     this.allocationSeq += 1;
     this.pendingAllocationSeq = this.allocationSeq;
 
+    const incomingByStation = new Map<string, number>();
+    for (const robot of this.world.robots) {
+      if (robot.jobId === null) continue;
+      const stationId = this.world.jobs.get(robot.jobId)?.stationId;
+      if (stationId != null) {
+        incomingByStation.set(stationId, (incomingByStation.get(stationId) ?? 0) + 1);
+      }
+    }
+
     return {
       simTimeMs: this.world.simTimeMs,
       allocationSeq: this.allocationSeq,
@@ -177,6 +191,7 @@ export class Simulation {
         (station): StationObservation => ({
           id: station.id,
           queueLength: station.queue.length,
+          incomingTrips: incomingByStation.get(station.id) ?? 0,
           queueCapacity: station.queueCapacity,
           serviceTimeMs: station.serviceTimeMs,
           busy: station.serviceRemainingMs > 0,
@@ -361,7 +376,7 @@ export class Simulation {
     robot.assignedAtMs = this.world.simTimeMs;
     robot.carrying = false;
     robot.blockedTicks = 0;
-    robot.path = findPath(this.world.config.grid, robot.cell, job.pickup);
+    robot.path = findTrafficAwarePath(this.world, robot, job.pickup);
 
     job.status = 'assigned';
     job.stationId = station.id;
@@ -436,21 +451,25 @@ export class Simulation {
       if (pod.available) visibleCells.add(cellKey(pod.cell));
     }
 
-    const { width, height } = this.world.config.grid;
-    for (const pod of pending) {
-      const free: Cell[] = [];
-      for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-          const key = `${x},${y}`;
-          if (robotCells.has(key) || visibleCells.has(key)) continue;
-          free.push({ x, y });
-        }
-      }
-      // No free cell: leave the pod pending and retry on the next tick.
-      if (free.length === 0) continue;
+    const storageCellKeys = new Set(this.world.podStorageCells.map(cellKey));
+    const isFreeStorageCell = (cell: Cell): boolean => {
+      const key = cellKey(cell);
+      return !robotCells.has(key) && !visibleCells.has(key);
+    };
 
-      const cell = free[this.world.rng.int(free.length)]!;
-      pod.cell = cell;
+    for (const pod of pending) {
+      let cell: Cell | undefined;
+      if (storageCellKeys.has(cellKey(pod.cell)) && isFreeStorageCell(pod.cell)) {
+        cell = pod.cell;
+      } else {
+        const free = this.world.podStorageCells.filter(isFreeStorageCell);
+        if (free.length > 0) cell = free[this.world.rng.int(free.length)];
+      }
+
+      // No free storage slot: leave the pod pending and retry next tick.
+      if (cell === undefined) continue;
+
+      pod.cell = { ...cell };
       pod.available = true;
       pod.reservedByJobId = null;
       pod.replenishAtMs = null;
@@ -560,7 +579,7 @@ export class Simulation {
         if (station === undefined) continue;
 
         const dock = nearestDock(station, robot.cell);
-        robot.path = findPath(this.world.config.grid, robot.cell, dock);
+        robot.path = findTrafficAwarePath(this.world, robot, dock);
       }
 
       // Ruling R20: any dock of the assigned station accepts the pod, even if
@@ -647,24 +666,44 @@ export class Simulation {
     const occupied = this.robotOccupancy(robot);
     const apron = Math.max(2, Math.floor(Math.min(width, height) / 8));
     const docks = this.world.stations.flatMap((station) => station.docks);
+    const claimedTargets = new Set<string>();
+    for (const other of this.world.robots) {
+      if (other === robot || other.jobId !== null || other.carrying || other.path.length === 0) {
+        continue;
+      }
+      claimedTargets.add(cellKey(other.path[other.path.length - 1]!));
+    }
+
+    // Structured scenarios park only in the generated robot lanes. This keeps
+    // post-delivery traffic out of rack slots and avoids the old scan-order
+    // behaviour that sent every serviced robot across the floor toward (0,0).
+    const layout = deriveLayout(this.world.config);
+    const candidates =
+      layout.parkingCells.length > 0
+        ? layout.parkingCells
+        : layout.robotSpawnCells;
 
     const preferred: Cell[] = [];
     const fallback: Cell[] = [];
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const cell = { x, y };
-        if (occupied.has(cellKey(cell))) continue;
-
-        let nearDock = false;
-        for (const dock of docks) {
-          if (manhattan(cell, dock) <= apron) {
-            nearDock = true;
-            break;
-          }
-        }
-        if (nearDock) fallback.push(cell);
-        else preferred.push(cell);
+    for (const cell of candidates) {
+      const key = cellKey(cell);
+      if (
+        occupied.has(key) ||
+        claimedTargets.has(key) ||
+        sameCell(cell, robot.cell)
+      ) {
+        continue;
       }
+
+      let nearDock = false;
+      for (const dock of docks) {
+        if (manhattan(cell, dock) <= apron) {
+          nearDock = true;
+          break;
+        }
+      }
+      if (nearDock) fallback.push(cell);
+      else preferred.push(cell);
     }
 
     // Degraded fallback: on a very small or very crowded grid there may be no
@@ -675,9 +714,25 @@ export class Simulation {
     const pool = preferred.length > 0 ? preferred : fallback;
     if (pool.length === 0) return;
 
-    const target = pool[this.parkingSeq % pool.length]!;
-    this.parkingSeq += 1;
-    const path = findPath(this.world.config.grid, robot.cell, target);
+    // Nearest-lane parking shortens empty repositioning and limits opposing
+    // cross-floor flows. Cell index is the deterministic tie-breaker.
+    let target = pool[0]!;
+    let targetDistance = manhattan(robot.cell, target);
+    let targetIndex = target.y * width + target.x;
+    for (let index = 1; index < pool.length; index += 1) {
+      const candidate = pool[index]!;
+      const distance = manhattan(robot.cell, candidate);
+      const cellIndex = candidate.y * width + candidate.x;
+      if (
+        distance < targetDistance ||
+        (distance === targetDistance && cellIndex < targetIndex)
+      ) {
+        target = candidate;
+        targetDistance = distance;
+        targetIndex = cellIndex;
+      }
+    }
+    const path = findTrafficAwarePath(this.world, robot, target);
     if (path.length === 0) return;
 
     robot.path = path;
